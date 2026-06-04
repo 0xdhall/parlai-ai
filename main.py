@@ -1,4 +1,4 @@
-[6/4/2026 7:36 PM] 4ng: import os
+import os
 import requests
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
@@ -167,5 +167,5 @@ def main():
 
     send_telegram(msg)
 
-if name == "__main__":
+if __name__ == "__main__":
     main()
