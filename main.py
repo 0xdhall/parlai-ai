@@ -6,66 +6,21 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# All available soccer leagues from Odds API
-ALL_SOCCER_SPORTS = [
-    "soccer_australia_a_league",
-    "soccer_austria_bundesliga",
-    "soccer_belgium_first_division",
-    "soccer_brazil_campeonato",
-    "soccer_brazil_serie_b",
-    "soccer_chile_campeonato",
-    "soccer_china_superleague",
-    "soccer_colombia_primera_a",
-    "soccer_conmebol_copa_libertadores",
-    "soccer_conmebol_copa_sudamericana",
-    "soccer_denmark_superliga",
-    "soccer_england_carabao_cup",
-    "soccer_england_fa_cup",
-    "soccer_england_league_one",
-    "soccer_england_league_two",
-    "soccer_england_premier_league",
-    "soccer_england_championship",
-    "soccer_finland_veikkausliiga",
-    "soccer_france_ligue_1",
-    "soccer_france_ligue_2",
-    "soccer_germany_bundesliga",
-    "soccer_germany_bundesliga_2",
-    "soccer_greece_super_league",
-    "soccer_hungary_ot",
-    "soccer_india_super_league",
-    "soccer_italy_serie_a",
-    "soccer_italy_serie_b",
-    "soccer_japan_j_league",
-    "soccer_japan_j_league_2",
-    "soccer_mexico_liga_mx",
-    "soccer_netherlands_eredivisie",
-    "soccer_netherlands_eerste_divisie",
-    "soccer_norway_eliteserien",
-    "soccer_norway_obos_ligaen",
-    "soccer_poland_ekstraklasa",
-    "soccer_portugal_primeira_liga",
-    "soccer_romania_liga_1",
-    "soccer_russia_premier_league",
-    "soccer_scotland_premiership",
-    "soccer_scotland_championship",
-    "soccer_south_korea_k_league_1",
-    "soccer_south_korea_k_league_2",
-    "soccer_spain_la_liga",
-    "soccer_spain_segunda_division",
-    "soccer_sweden_allsvenskan",
-    "soccer_sweden_superettan",
-    "soccer_switzerland_super_league",
-    "soccer_turkey_super_league",
-    "soccer_ukraine_premier_league",
-    "soccer_usl_championship",
-    "soccer_usa_mls",
-    "soccer_usa_nwsl",  # Women's soccer
-    "soccer_uefa_champions_league",
-    "soccer_uefa_europa_league",
-    "soccer_uefa_conference_league",
-    "soccer_england_fa_cup_women",
-    "soccer_europe_champions_league_women",
-]
+def get_all_soccer_sports():
+    """Dynamically fetch ALL soccer leagues from Odds API"""
+    try:
+        url = "https://api.the-odds-api.com/v4/sports/"
+        params = {"apiKey": ODDS_API_KEY}
+        response = requests.get(url, params=params, timeout=20)
+        sports = response.json()
+        
+        # Filter only soccer/football leagues that are active
+        soccer_sports = [s["key"] for s in sports if s["group"] == "Soccer" and s["active"]]
+        print(f"Found {len(soccer_sports)} soccer leagues from API")
+        return soccer_sports
+    except Exception as e:
+        print(f"Error fetching sports list from API: {e}")
+        return []
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -198,26 +153,28 @@ def remove_duplicates(picks):
     return list(unique.values())
 
 def main():
-    print(f"Scanning {len(ALL_SOCCER_SPORTS)} soccer leagues and competitions...")
+    # Fetch ALL soccer sports dynamically from API
+    sports = get_all_soccer_sports()
+    
+    if not sports:
+        send_telegram("❌ Error: Tidak bisa fetch daftar liga dari API Odds")
+        return
+    
+    print(f"Scanning {len(sports)} soccer leagues...")
     
     all_picks = []
-    scanned_count = 0
     match_count = 0
 
-    for sport in ALL_SOCCER_SPORTS:
+    for sport in sports:
         try:
             data = fetch_odds(sport)
 
             if isinstance(data, list):
-                scanned_count += 1
                 for event in data:
                     picks = analyze_event(event)
                     if picks:
                         match_count += 1
                     all_picks.extend(picks)
-
-            elif isinstance(data, dict):
-                print(f"API response for {sport}: {data}")
 
         except Exception as e:
             print(f"Error {sport}: {e}")
@@ -232,7 +189,7 @@ def main():
     msg = "📊 <b>Parlay AI Signal V3</b>\n\n"
     msg += "Filter: Sekarang sampai 06:00 WITA\n"
     msg += "Market: OU + Asian Handicap\n"
-    msg += f"Total Scan: {scanned_count} Liga Soccer\n"
+    msg += f"Total Scan: {len(sports)} Liga Soccer\n"
     msg += f"Total Match Malam: {match_count}\n\n"
 
     for i, pick in enumerate(all_picks, 1):
