@@ -1,7 +1,7 @@
 import os
 import html
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 BAI_API_KEY = os.getenv("BAI_API_KEY")
@@ -84,7 +84,7 @@ def is_match_now_to_10am(commence_time):
     match_utc = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
     match_wita = match_utc + timedelta(hours=WITA_OFFSET)
 
-    now_wita = datetime.utcnow() + timedelta(hours=WITA_OFFSET)
+    now_wita = datetime.now(timezone.utc) + timedelta(hours=WITA_OFFSET)
 
     if now_wita.hour < SCAN_UNTIL_HOUR_WITA:
         cutoff_wita = now_wita.replace(
