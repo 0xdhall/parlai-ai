@@ -4,14 +4,21 @@ import requests
 from datetime import datetime, timedelta, timezone
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+ODDSPAPI_API_KEY = os.getenv("ODDSPAPI_API_KEY")
 BAI_API_KEY = os.getenv("BAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BAI_MODEL = "gpt-5.2"
 WITA_OFFSET = 8
-SCAN_UNTIL_HOUR_WITA = 10
+SCAN_UNTIL_HOUR_WITA = 6
 TELEGRAM_LIMIT = 3500
+
+# The Odds API regions to scan
+ODDS_API_REGIONS = ["eu", "asia"]
+
+# Top Asia tournaments for OddsPAPI (will be fetched dynamically)
+TOP_ASIA_TOURNAMENT_IDS = []
 
 
 def send_telegram(text):
@@ -60,11 +67,11 @@ def get_all_soccer_sports():
         return []
 
 
-def fetch_odds(sport):
+def fetch_odds_the_odds_api(sport, region="eu"):
     url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
     params = {
         "apiKey": ODDS_API_KEY,
-        "regions": "eu",
+        "regions": region,
         "markets": "spreads,totals",
         "oddsFormat": "decimal"
     }
@@ -73,15 +80,84 @@ def fetch_odds(sport):
         r = requests.get(url, params=params, timeout=25)
         return r.json()
     except Exception as e:
-        print(f"Error fetch odds {sport}:", e)
+        print(f"Error fetch odds {sport} (region={region}):", e)
         return []
 
 
-def is_match_now_to_10am(commence_time):
+def fetch_odds_oddspapi():
+    """Fetch odds from OddsPAPI for top Asia tournaments"""
+    if not ODDSPAPI_API_KEY:
+        print("OddsPAPI key not set, skipping OddsPAPI fetch")
+        return []
+
+    try:
+        # First, get all tournaments
+        url = "https://api.oddspapi.io/v4/tournaments"
+        params = {"apiKey": ODDSPAPI_API_KEY}
+        r = requests.get(url, params=params, timeout=20)
+        tournaments = r.json()
+
+        if not isinstance(tournaments, list):
+            print("OddsPAPI tournaments response not a list:", tournaments)
+            return []
+
+        # Filter Asia tournaments and get top ones
+        asia_tournaments = [
+            t for t in tournaments
+            if t.get("sport_id") == 10 and  # Soccer
+               ("Asia" in t.get("region", "") or 
+                any(country in t.get("country", "") for country in 
+                    ["Thailand", "Vietnam", "Indonesia", "Malaysia", "Singapore", 
+                     "Philippines", "Myanmar", "Cambodia", "Laos"]))
+        ]
+
+        asia_tournament_ids = [str(t["id"]) for t in asia_tournaments[:15]]  # Top 15
+
+        if not asia_tournament_ids:
+            print("No Asia tournaments found")
+            return []
+
+        print(f"Fetching OddsPAPI for {len(asia_tournament_ids)} Asia tournaments")
+
+        # Fetch odds for these tournaments
+        all_fixtures = []
+        for tournament_id in asia_tournament_ids:
+            try:
+                url = "https://api.oddspapi.io/v4/odds-by-tournaments"
+                params = {
+                    "apiKey": ODDSPAPI_API_KEY,
+                    "tournamentIds": tournament_id,
+                    "oddsFormat": "decimal"
+                }
+                r = requests.get(url, params=params, timeout=20)
+                fixtures = r.json()
+
+                if isinstance(fixtures, list):
+                    all_fixtures.extend(fixtures)
+            except Exception as e:
+                print(f"Error fetching tournament {tournament_id}:", e)
+                continue
+
+        return all_fixtures
+
+    except Exception as e:
+        print("Error OddsPAPI fetch:", e)
+        return []
+
+
+def is_match_now_to_6am(commence_time):
     if not commence_time:
         return False, None
 
-    match_utc = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+    # Handle both ISO format and timestamp
+    try:
+        if isinstance(commence_time, str):
+            match_utc = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+        else:
+            match_utc = datetime.fromtimestamp(commence_time, tz=timezone.utc)
+    except:
+        return False, None
+
     match_wita = match_utc + timedelta(hours=WITA_OFFSET)
 
     now_wita = datetime.now(timezone.utc) + timedelta(hours=WITA_OFFSET)
@@ -112,14 +188,22 @@ def format_point(point):
     return f"{point:g}"
 
 
-def parse_event(event):
-    allowed, match_wita = is_match_now_to_10am(event.get("commence_time"))
+def parse_event(event, source="odds-api"):
+    """Parse event from either The Odds API or OddsPAPI"""
+    
+    # Extract commence time based on source
+    if source == "odds-api":
+        commence_time = event.get("commence_time")
+    else:  # oddspapi
+        commence_time = event.get("start_time") or event.get("commence_time")
+
+    allowed, match_wita = is_match_now_to_6am(commence_time)
     if not allowed:
         return None
 
     home = event.get("home_team", "Home")
     away = event.get("away_team", "Away")
-    league = event.get("sport_title", "-")
+    league = event.get("sport_title") or event.get("tournament_name") or "-"
 
     match = {
         "home": home,
@@ -128,16 +212,20 @@ def parse_event(event):
         "date": match_wita.strftime("%d %b %Y"),
         "time": match_wita.strftime("%H:%M WITA"),
         "ah": [],
-        "ou": []
+        "ou": [],
+        "match_key": f"{home}_{away}_{match_wita.strftime('%Y%m%d%H%M')}"  # For dedup
     }
 
     seen_ah = set()
     seen_ou = set()
 
-    for bookmaker in event.get("bookmakers", []):
+    # Parse bookmakers
+    bookmakers = event.get("bookmakers", [])
+    for bookmaker in bookmakers:
         book = bookmaker.get("title", "-")
 
-        for market in bookmaker.get("markets", []):
+        markets = bookmaker.get("markets", [])
+        for market in markets:
             key = market.get("key")
             outcomes = market.get("outcomes", [])
 
@@ -190,6 +278,32 @@ def parse_event(event):
         return None
 
     return match
+
+
+def merge_matches(matches_list):
+    """Merge matches from multiple sources, removing duplicates"""
+    seen_keys = set()
+    merged = []
+
+    for match in matches_list:
+        key = match.get("match_key")
+        if key not in seen_keys:
+            seen_keys.add(key)
+            merged.append(match)
+        else:
+            # If duplicate, merge odds
+            for existing in merged:
+                if existing.get("match_key") == key:
+                    existing["ah"].extend(match["ah"])
+                    existing["ou"].extend(match["ou"])
+                    # Remove duplicates and re-sort
+                    existing["ah"] = list({(x["team"], x["point"], x["odds"], x["book"]): x for x in existing["ah"]}.values())
+                    existing["ou"] = list({(x["side"], x["point"], x["odds"], x["book"]): x for x in existing["ou"]}.values())
+                    existing["ah"] = sorted(existing["ah"], key=lambda x: x["point"])
+                    existing["ou"] = sorted(existing["ou"], key=lambda x: x["point"])
+                    break
+
+    return merged
 
 
 def build_raw_market_message(matches, total_leagues):
@@ -330,26 +444,47 @@ def main():
         print("Telegram secret belum lengkap.")
         return
 
+    print("Starting scraper...")
+    
+    # Fetch from The Odds API
     sports = get_all_soccer_sports()
 
     if not sports:
-        send_telegram("❌ Tidak bisa mengambil daftar liga soccer.")
+        send_telegram("❌ Tidak bisa mengambil daftar liga soccer dari The Odds API.")
         return
 
     matches = []
+    total_sports_scanned = len(sports)
+
+    print(f"Found {total_sports_scanned} sports, fetching odds...")
 
     for sport in sports:
-        data = fetch_odds(sport)
+        for region in ODDS_API_REGIONS:
+            data = fetch_odds_the_odds_api(sport, region)
 
-        if not isinstance(data, list):
-            continue
+            if not isinstance(data, list):
+                continue
 
-        for event in data:
-            m = parse_event(event)
+            for event in data:
+                m = parse_event(event, source="odds-api")
+                if m:
+                    matches.append(m)
+
+    # Fetch from OddsPAPI
+    print("Fetching from OddsPAPI...")
+    oddspapi_events = fetch_odds_oddspapi()
+
+    if oddspapi_events:
+        for event in oddspapi_events:
+            m = parse_event(event, source="oddspapi")
             if m:
                 matches.append(m)
 
+    # Merge and deduplicate
+    print(f"Total matches before merge: {len(matches)}")
+    matches = merge_matches(matches)
     matches = sorted(matches, key=lambda x: (x["date"], x["time"], x["league"]))
+    print(f"Total matches after merge: {len(matches)}")
 
     if not matches:
         send_telegram(
@@ -358,7 +493,7 @@ def main():
         )
         return
 
-    raw_msg = build_raw_market_message(matches, len(sports))
+    raw_msg = build_raw_market_message(matches, total_sports_scanned)
     send_telegram(raw_msg)
 
     ai_result = analyze_with_bai(matches)
@@ -366,6 +501,8 @@ def main():
     ai_msg += html.escape(ai_result)
 
     send_telegram(ai_msg)
+
+    print("Scraper completed successfully!")
 
 
 if __name__ == "__main__":
