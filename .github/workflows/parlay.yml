@@ -1,7 +1,11 @@
 name: Parlay AI Scanner
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Tombol manual di web GitHub tetap aktif
+  schedule:
+    # Menggunakan waktu standar UTC (WITA dikurangi 8 jam)
+    - cron: '0 9 * * *'   # 09:00 UTC = Jam 17:00 WITA (5 Sore) otomatis jalan
+    - cron: '0 13 * * *'  # 13:00 UTC = Jam 21:00 WITA (9 Malam) otomatis jalan
 
 jobs:
   run-bot:
